@@ -1,6 +1,6 @@
 # Integration Guide
 
-The library is three headers. Pick whichever mechanism you prefer.
+It's three headers. Any of these work.
 
 ## CMake FetchContent
 
@@ -9,7 +9,7 @@ include(FetchContent)
 FetchContent_Declare(
   zenith_bus
   GIT_REPOSITORY https://github.com/unnobatroo/zenith-bus.git
-  GIT_TAG main        # pin a tag/commit for reproducibility
+  GIT_TAG main        # pin a tag or commit for reproducible builds
 )
 FetchContent_MakeAvailable(zenith_bus)
 target_link_libraries(your_target PRIVATE zenith::zenith)
@@ -17,11 +17,11 @@ target_link_libraries(your_target PRIVATE zenith::zenith)
 
 ## Vendored
 
-Copy `include/zenith/` into your project and add it to your include path.
-Compile with `-std=c++20`. Nothing else is required — no libraries, no
-linker flags, no build files.
+Copy `include/zenith/` into your project, add it to the include path, compile
+with `-std=c++20`. Done. No libraries to link, no build system changes, no
+generated anything.
 
-## Minimal example
+## Smallest working example
 
 ```cpp
 #include "zenith/event_bus.hpp"
@@ -41,23 +41,26 @@ int main() {
 }
 ```
 
-## Rules that will bite you if ignored
+## The rules that will bite you
 
-- **One producer thread total.** `publish`/`try_push` from two threads = UB.
-- **One consumer per queue.** Don't share a subscriber handle across threads.
-- **Subscribe before publishing.** `subscribe()` during active publication
-  is safe, but the new subscriber misses in-flight events.
-- **`publish()` can partially fail.** Full queues drop the event while others
-  accept it — a retry duplicates to the fast queues. Use `publish_wait()` for
-  must-deliver events.
-- **Payloads are PODs.** See `TriviallyRelocatable` in the API reference.
+- **One producer thread, total.** Calling `publish`/`try_push` from two
+  threads is UB, not a slowdown.
+- **One consumer per queue.** Don't hand a subscriber handle to two threads.
+- **Subscribe first, publish second.** A subscriber that registers mid-stream
+  only sees events published after it.
+- **`publish()` can partially fail.** Full queues drop while the rest
+  accept — retrying double-delivers. For must-deliver, use `publish_wait()`
+  and accept that a dead subscriber blocks it.
+- **Payloads are PODs.** Trivially copyable, standard layout,
+  assignable, default-constructible. No `std::string`, no owning pointers.
+  Details in the [[API Reference]].
 
-## Requirement matrix
+## Requirements
 
 | | version |
 |---|---|
 | C++ | C++20 |
 | GCC | 12+ |
 | Clang | 15+ |
-| CMake (if used) | 3.22+ |
-| Arch | any; verified x86-64 and ARM64 |
+| CMake (only if you use it) | 3.22+ |
+| Arch | anything — verified on x86-64 and ARM64 |

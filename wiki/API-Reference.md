@@ -1,7 +1,7 @@
 # API Reference
 
-Everything lives in `namespace zenith`. Include `zenith/spsc_queue.hpp` or
-`zenith/event_bus.hpp` — that's the whole library.
+All of it lives in `namespace zenith`. Two headers:
+`zenith/spsc_queue.hpp` and `zenith/event_bus.hpp`. That's the library.
 
 ## `TriviallyRelocatable`
 
@@ -11,48 +11,51 @@ concept TriviallyRelocatable =
     std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>;
 ```
 
-Payload constraint. Plain structs of scalars qualify; `std::string`,
-`std::vector`, and anything with a constructor/destructor don't. Note the
-boundary: a struct containing a raw `int*` still satisfies the concept —
-pointers aren't checked — but if it *owns* what it points to, the bitwise
-slot copy shares ownership and you'll double-free. Payloads must also be
-assignable (the ring writes slots via copy assignment) and default-
-constructible (the `std::array` storage is default-constructed).
+What your payload must satisfy. Plain structs of scalars are fine;
+`std::string`, `std::vector`, anything with a constructor or destructor is
+not — slots are raw storage and get bitwise copies, so an owning pointer
+would double-free.
+
+One nuance: the concept checks copyability, not ownership. A struct holding a
+raw `int*` still compiles — pointers aren't the problem, *owning* what they
+point to is. Also note the queue stores a `std::array` and assigns into its
+elements, so payloads need to be default-constructible and assignable too.
 
 ## `SPSCQueue<T, Capacity>`
 
-`Capacity`: power of two, `>= 2`, compile-time enforced.
+`Capacity` must be a power of two and at least 2 — checked at compile time.
 
-| member | signature | notes |
+| member | signature | what it does |
 |---|---|---|
-| `try_push` | `bool try_push(const T&)` / `bool try_push(T&&)` | `false` when full. `noexcept`. Producer thread only. |
-| `try_pop` | `bool try_pop(T& out)` | `false` when empty. `noexcept`. Consumer thread only. |
-| `size_approx` | `std::size_t size_approx()` | Approximate — the peer index can move mid-call. |
+| `try_push` | `bool try_push(const T&)` / `bool try_push(T&&)` | Enqueue. `false` = queue full, nothing happened. `noexcept`. Producer thread only. |
+| `try_pop` | `bool try_pop(T& out)` | Dequeue into `out`. `false` = empty. `noexcept`. Consumer thread only. |
+| `size_approx` | `std::size_t size_approx()` | Roughly how many items. The peer index can move mid-call — approximate by design. |
 | `empty` | `bool empty()` | Same caveat. |
 
-One producer thread, one consumer thread. More than one of either is UB —
-that's the price of lock-free.
+One producer thread, one consumer thread — that's the contract. Two producers
+or two consumers on one queue is UB; that's what makes it lock-free.
 
 ## `EventBus<T, QueueCapacity, MaxSubscribers = 8>`
 
-Owns `MaxSubscribers` queues, created empty at construction.
+Owns `MaxSubscribers` queues, all created empty at construction.
 
-| member | signature | notes |
+| member | signature | what it does |
 |---|---|---|
-| `subscribe` | `std::size_t subscribe()` | Returns a queue handle `0..MaxSubscribers-1`. Call at setup before publishing. Safe to call concurrently, but hot-path subscribers should be registered up front. |
-| `subscriber_count` | `std::size_t subscriber_count()` | Active subscriptions. |
-| `publish` | `bool publish(const T&)` | One `try_push` per queue. `false` = at least one subscriber's queue was full → that subscriber dropped the event (partial delivery — do not retry the same event). |
-| `publish_wait` | `void publish_wait(const T&)` | Spins with `yield()` until every subscriber accepts. Exactly-once fan-out. Blocks forever if a subscriber stops draining. |
+| `subscribe` | `std::size_t subscribe()` | Reserves a queue, returns its handle. Call at setup, before publishing. Throws `std::length_error` past `MaxSubscribers`. |
+| `subscriber_count` | `std::size_t subscriber_count()` | How many queues are live. |
+| `publish` | `bool publish(const T&)` | One `try_push` per queue. `false` = some subscriber's queue was full and that subscriber dropped the event — *while others still received it*. Do not retry the same event. |
+| `publish_wait` | `void publish_wait(const T&)` | Spins (yielding) until every queue accepts. Exactly-once fan-out — but it blocks forever if a subscriber stops draining. |
 | `poll` | `bool poll(std::size_t sub, T& out)` | One non-blocking pop from subscriber `sub`'s queue. |
-| `drain` | `std::size_t drain(std::size_t sub, Callback&&)` | Pops everything available, calls `callback(item)` per event, returns count. The fast path for consumers. |
+| `drain` | `std::size_t drain(std::size_t sub, Callback&&)` | Pops everything currently queued, calls `callback(item)` for each, returns the count. This is what your consumer loop wants. |
 
-Invalid `sub` handles are rejected safely (`poll`→false, `drain`→0).
+Bad subscriber handles are handled, not fatal: `poll` returns `false`,
+`drain` returns 0.
 
-## Guarantees
+## The guarantees, in plain terms
 
-- All hot-path functions are `noexcept` and allocation-free.
-- Ordering: FIFO per subscriber. Each subscriber sees events in publish
-  order; subscribers see them at whatever time their drain loop runs.
-- Threading: `subscribe` may race `publish` safely (CAS-guarded); publish
-  assumes a single producer thread; each `poll`/`drain` handle has a single
-  consumer thread.
+- Hot-path functions are all `noexcept` and never allocate.
+- Per-subscriber ordering is strict FIFO — every subscriber sees events in
+  publish order, whenever its drain loop gets around to them.
+- `subscribe()` is safe to call while publishing (CAS-guarded), but a late
+  subscriber only sees events published *after* it registers.
+- Exactly one producer thread total; exactly one consumer thread per queue.

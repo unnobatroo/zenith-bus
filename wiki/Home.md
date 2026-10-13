@@ -1,8 +1,10 @@
 # ZenithBus
 
-A header-only C++20 library for moving events between threads with no locks
-and no allocations on the hot path. One producer, many subscribers, each with
-a private SPSC ring buffer.
+A header-only C++20 library for moving events between threads without locks.
+
+The short version: when you know each queue has exactly one writer and one
+reader, you don't need a mutex. Two atomic counters and correct memory
+ordering are enough — and they're a lot faster.
 
 ```mermaid
 flowchart LR
@@ -15,36 +17,35 @@ flowchart LR
 ## Why it exists
 
 Mutex-based queues have jitter: lock contention, priority inversion, syscall
-wakeups. If your threads have fixed roles (one writes, one reads each queue),
-you don't need mutual exclusion at all — two atomic indices and the C++
-memory model are enough. ZenithBus packages that pattern so you don't
-hand-roll atomics.
+wakeups. In latency-sensitive pipelines that jitter becomes your tail
+latency. ZenithBus packages the SPSC ring-buffer pattern — the same design
+folly and moodycamel use — so you don't hand-roll atomics and get them wrong.
 
-## The three rules
+## Three rules to remember
 
-1. **Zero allocation on dispatch.** Queues are preallocated `std::array`s
-   inside the bus. `publish()`/`poll()`/`drain()` never touch the heap.
+1. **Nothing allocates on dispatch.** Queues are `std::array`s inside the
+   bus, allocated once at construction. The hot path never touches the heap.
 2. **Payloads are plain structs.** `TriviallyRelocatable` = trivially
-   copyable + standard layout. Slots are raw storage.
-3. **One writer, one reader per queue.** That's what makes it lock-free. The
-   bus is the only producer; each subscriber thread is the only reader of its
-   queue.
+   copyable + standard layout. Slots are raw storage — nothing is constructed
+   or destroyed per message.
+3. **One writer, one reader per queue.** That's the whole trick. The bus is
+   the only producer; each subscriber thread is the only reader of its queue.
+   Break that rule and it's UB — that's the price of lock-free.
 
-## Numbers (M-series laptop, `make bench`)
+## Numbers (Release, M-series laptop — `make bench` for yours)
 
-- push+pop round trip, same thread: ~5.5 ns
-- two threads, ping-pong round trip: ~50 ns median, ~200 ns p99
-- two threads, sustained: ~53 M messages/sec
-- fan-out publish to 8 subscribers: ~17.5 ns per publish
+- push+pop, same thread: ~5.4 ns
+- two threads, ping-pong round trip: ~50 ns median
+- two threads, sustained: ~55 M messages/sec
+- fan-out to 8 subscribers: ~19.5 ns per publish
 
-## Next
+## Keep reading
 
 - [[Architecture and Memory Model]] — why it works
-- [[API Reference]] — every function
-- [[Integration Guide]] — drop it into your project
-- [[Benchmarking and Performance]] — reproduce the numbers
+- [[API Reference]] — every function, every caveat
+- [[Benchmarking and Performance]] — reproduce and verify the numbers
+- [[Integration Guide]] — drop it into your project in 5 lines of CMake
 
-## Also see
-
-`web/` — an interactive visualizer running these exact headers in the
-browser via WebAssembly, with real worker threads moving the indices.
+Bonus: `web/` is an interactive visualizer that runs these exact headers in
+the browser via WebAssembly — with real worker threads, not an animation.
+[zenith-bus.vercel.app](https://zenith-bus.vercel.app)

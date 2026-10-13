@@ -1,9 +1,16 @@
 # ZenithBus
 
-A tiny header-only C++20 library that moves events between threads without
-locks. One producer broadcasts to N subscribers; each subscriber gets its own
-single-producer/single-consumer ring buffer. No heap allocation, no mutexes,
-no CAS loops on the hot path.
+A header-only C++20 library for moving events between threads without locks.
+
+Here's the deal: the default way to pass data between threads is a mutex plus
+a queue. That works, but it has jitter — lock contention, priority inversion,
+syscall wakeups. If you're building something latency-sensitive (telemetry,
+market data, robotics) that jitter is your tail latency.
+
+The trick ZenithBus uses: if you *know* each queue has exactly one writer and
+one reader, you don't need mutual exclusion at all. Two atomic counters and
+the C++ memory model are enough. One producer broadcasts to N subscribers;
+each subscriber gets its own single-producer/single-consumer ring buffer.
 
 ```mermaid
 flowchart LR
@@ -13,16 +20,16 @@ flowchart LR
     B --> Q2[queue 2] --> C2[consumer thread 2]
 ```
 
-## Try it in 30 seconds
+## Try it
 
 ```bash
-make test    # build + run the whole suite (incl. a 10M-message stress test)
-make bench   # latency & throughput numbers, incl. real 2-thread ping-pong
-make viz     # serve the interactive WASM visualizer at localhost:8469
+make test     # build + run everything, including a 10M-message stress test
+make bench    # latency + throughput, including real 2-thread ping-pong
+make viz      # serve the live WASM visualizer at localhost:8469
 ```
 
-Requires: CMake 3.22+, GCC 12+ or Clang 15+. Test deps are fetched
-automatically — the library itself needs nothing but `<atomic>`.
+Needs CMake 3.22+ and GCC 12+ or Clang 15+. Test dependencies download
+themselves; the library itself needs nothing but `<atomic>`.
 
 ## Using it
 
@@ -33,7 +40,7 @@ automatically — the library itself needs nothing but `<atomic>`.
 struct Telemetry { uint32_t id; float speed; float steer; };
 
 zenith::EventBus<Telemetry, 1024> bus;      // capacity: power of two, ≥ 2
-auto sub = bus.subscribe();                 // call once at setup, ≤ 8 subs
+auto sub = bus.subscribe();                 // once, at setup
 
 std::jthread reader([&](std::stop_token st) {
     while (!st.stop_requested())
@@ -42,58 +49,60 @@ std::jthread reader([&](std::stop_token st) {
         });
 });
 
-bus.publish({42, 12.5f, -0.05f});           // non-blocking, no allocation
+bus.publish({42, 12.5f, -0.05f});           // non-blocking, zero allocation
 ```
 
-Two things to know:
+Two catches worth knowing:
 
 - `publish()` returns `false` if any subscriber's queue is full — that
-  subscriber drops the event. Use `publish_wait()` when drops aren't allowed
-  (spins until everyone accepts; a dead subscriber will block it forever).
-- Payloads must be trivially copyable plain structs
-  (`zenith::TriviallyRelocatable`) — slots are raw storage, nothing is
-  constructed or destroyed per message.
+  subscriber drops the event *while the others still got it*. Don't retry the
+  same event or you'll double-deliver. Want guaranteed delivery? Use
+  `publish_wait()` — it spins until everyone accepts (and will spin forever
+  if a subscriber dies, so pick your poison).
+- Payloads must be plain structs — trivially copyable, standard layout.
+  `std::string` won't compile, which is the point.
 
-## How it stays fast
+## Why it's fast
 
-The SPSC queue is the classic design (folly, moodycamel): producer and
-consumer each own one index on its own 64-byte cache line, so the cores never
-fight over the same line. Each side keeps a cached copy of the peer's index
-and only does the real atomic load when the queue *looks* full/empty. Payload
-writes are ordered by a release store on the index; the consumer pairs it
-with an acquire load. On x86-64 all of this is plain `mov` — no `lock`, no
-fences.
+Producer and consumer each own one counter (`tail_` / `head_`), each on its
+own 64-byte cache line so the cores never fight over the same line. Each side
+keeps a local cached copy of the peer's counter and only does the real atomic
+load when the queue *looks* empty or full — so the hot path is basically just
+local arithmetic. Payload writes are ordered by a release-store on the index;
+the consumer pairs it with an acquire-load. On x86-64 all of that compiles to
+plain `mov`. No `lock`, no fences, no CAS retry loops anywhere.
 
-Measured on this machine (Apple M-series, loaded desktop):
+Measured on a loaded laptop (Apple M-series, Release build):
 
 | benchmark | result |
 |---|---|
-| same-thread push+pop | ~5.5 ns/op |
-| 2-thread ping-pong RTT | ~50 ns p50, ~150 ns p99 |
-| 2-thread sustained throughput | ~55 M msg/s |
-| fan-out publish to 8 subs | ~17.5 ns/publish |
-| same, without `alignas(64)` | −6–30% throughput (noisy unpinned runs — false sharing is real) |
+| push+pop, same thread | ~5.4 ns |
+| 2 threads, ping-pong round trip | ~50 ns median, ~150 ns p99 |
+| 2 threads, sustained throughput | ~55 M msg/s |
+| fan-out publish to 8 subscribers | ~19.5 ns/publish |
+| same code, no `alignas(64)` | 6–30% less throughput — false sharing is real |
 
-Run `make bench` for your own numbers. CI additionally runs `perf stat` on
-padded vs unpadded builds to count the L1 misses directly.
+Your numbers will differ; run `make bench`. There's also a `perf stat` CI job
+counting actual L1 misses on padded vs unpadded builds.
 
 ## The visualizer
 
-`web/` is a zero-dependency static site (no npm, no build step — plain HTML,
-CSS, and ES modules). It loads the *actual* `spsc_queue.hpp`/`event_bus.hpp`
-compiled to WebAssembly with real worker threads (`wasm/zenith_api.cpp`
-exposes a small C API). The ring view's pointers and the bus view's queues
-are live state from running threads, not an animation. The cache-line view is
-a conceptual MESI diagram — browser code can't observe coherence state, and
-it says so on the tin.
+`web/` is a zero-dependency static site — no npm, no build step, plain HTML +
+ES modules. It runs the *actual* headers compiled to WebAssembly, and the
+queue/bus views are driven by real worker threads hammering the real objects
+— the indices you see moving are live atomic state, not an animation. The
+cache-line view is a conceptual diagram (coherence state is unobservable from
+software, and it says that on the page).
 
-`make viz` serves it locally with the COOP/COEP headers SharedArrayBuffer
-requires; `vercel.json` sets the same headers for deployment.
+Live at [zenith-bus.vercel.app](https://zenith-bus.vercel.app). Locally:
+`make viz` — `serve.py` adds the COOP/COEP headers SharedArrayBuffer needs,
+and `vercel.json` does the same on deploy.
 
-## More
+## Deeper reading
 
-- [Full API reference](wiki/API-Reference.md) ·
-  [memory-model deep dive](wiki/Architecture-and-Memory-Model.md) ·
-  [integration guide](wiki/Integration-Guide.md)
-- `examples/vehicle_telemetry_cli.cpp` — realistic CLI demo (CLI11 + fmt)
-- `CONTRIBUTING.md` — dev workflow, sanitizer builds, PR checklist
+[API reference](wiki/API-Reference.md) ·
+[how the memory model works](wiki/Architecture-and-Memory-Model.md) ·
+[benchmarks](wiki/Benchmarking-and-Performance.md) ·
+[drop it in your project](wiki/Integration-Guide.md)
+
+GPL-3.0. PRs welcome — see CONTRIBUTING.md.

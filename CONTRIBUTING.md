@@ -1,36 +1,43 @@
 # Contributing
 
-Thanks! The bar for changes to `include/zenith/` is high: it must stay
-lock-free, allocation-free, and correct under concurrency.
+Thanks for wanting in. Quick heads-up: the bar for touching
+`include/zenith/` is high — it has to stay lock-free, allocation-free, and
+correct under concurrency. A clever optimization that's wrong 0.001% of the
+time is a regression here.
 
 ## Setup
 
-You need CMake 3.22+ and GCC 12+ or Clang 15+. Everything else is fetched by
-CMake or optional.
+CMake 3.22+, GCC 12+ or Clang 15+. Everything else fetches itself or is
+optional.
 
 ```bash
-make test    # build + run the suite — covers most of the loop below
-make bench   # benchmarks, including the real 2-thread ping-pong
-make asan    # ASan + UBSan build and test
-make tsan    # ThreadSanitizer build and test — required for atomic changes
+make test      # build + run the suite — this covers most of your loop
+make bench     # benchmarks, incl. the real 2-thread ping-pong (Release)
+make asan      # ASan + UBSan
+make tsan      # ThreadSanitizer — non-negotiable if you touched atomics
+make viz       # the web visualizer (python3, no node needed)
 ```
 
-(Plain `cmake`/`ctest` equivalents are in the Makefile if you prefer.)
+(The Makefile is a thin wrapper — `cat Makefile` to see the raw commands.)
 
 ## The rules
 
-- **No allocation, no exceptions** on `try_push`/`try_pop`/`publish`/`poll`/`drain`.
-- Atomics are `relaxed`/`acquire`/`release` only. Want `seq_cst` or a `lock`-
-  prefixed op? Bring a benchmark showing why.
-- `head_` and `tail_` stay on separate cache lines (`ZENITH_CACHELINE`).
+- **No allocations, no exceptions** inside `try_push` / `try_pop` /
+  `publish` / `poll` / `drain`.
+- Atomics are `relaxed` / `acquire` / `release` only. If you think you need
+  `seq_cst` or a locked RMW, bring the benchmark that proves it.
+- `head_` and `tail_` stay on separate cache lines — `ZENITH_CACHELINE`.
+  Don't touch it; `bench_event_bus_nopad` exists to show what happens.
 - Payloads must satisfy `TriviallyRelocatable`.
-- Touch the memory ordering? Write a comment explaining *why* it's still
-  correct, and make sure `make tsan` passes.
+- If you change the memory ordering, write a comment explaining why it's
+  still correct and make `make tsan` green. If you can't explain it, don't
+  ship it.
 
 ## PRs
 
-- Conventional Commits (`feat:` `fix:` `perf:` `test:` `docs:` `ci:`), one
+- Conventional Commits: `feat:` `fix:` `perf:` `test:` `docs:` `ci:`. One
   logical change per commit.
-- CI matrix + sanitizers + clang-format/clang-tidy must pass. CodeRabbit
-  reviews automatically — address or rebut its comments.
-- Performance-sensitive changes: include before/after `make bench` output.
+- CI has to be green: compiler matrix, sanitizers, clang-format, clang-tidy.
+  CodeRabbit reviews automatically — fix its comments or say why it's wrong;
+  both are fine, silence isn't.
+- Touching perf? Paste before/after `make bench` output in the PR.
