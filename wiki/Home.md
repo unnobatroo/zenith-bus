@@ -4,10 +4,12 @@ A header-only C++20 library for moving events between threads with no locks
 and no allocations on the hot path. One producer, many subscribers, each with
 a private SPSC ring buffer.
 
-```
-producer ──► EventBus ──► [q0]──► subscriber 0
-                       ├─► [q1]──► subscriber 1
-                       └─► [q2]──► subscriber 2
+```mermaid
+flowchart LR
+    P[producer thread] -->|publish| B[EventBus]
+    B --> Q0[queue 0] --> S0[subscriber 0]
+    B --> Q1[queue 1] --> S1[subscriber 1]
+    B --> Q2[queue 2] --> S2[subscriber 2]
 ```
 
 ## Why it exists

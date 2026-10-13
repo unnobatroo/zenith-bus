@@ -5,10 +5,12 @@ locks. One producer broadcasts to N subscribers; each subscriber gets its own
 single-producer/single-consumer ring buffer. No heap allocation, no mutexes,
 no CAS loops on the hot path.
 
-```
-publisher thread ──publish()──► ┌─ queue 0 ──► consumer thread 0
-                                ├─ queue 1 ──► consumer thread 1
-                                └─ queue 2 ──► consumer thread 2
+```mermaid
+flowchart LR
+    P[producer thread] -->|publish| B[EventBus]
+    B --> Q0[queue 0] --> C0[consumer thread 0]
+    B --> Q1[queue 1] --> C1[consumer thread 1]
+    B --> Q2[queue 2] --> C2[consumer thread 2]
 ```
 
 ## Try it in 30 seconds
