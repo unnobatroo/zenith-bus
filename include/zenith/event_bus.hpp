@@ -29,12 +29,18 @@ class EventBus {
     // Reserves a subscriber queue and returns its handle.
     // Throws std::length_error once MaxSubscribers is reached.
     [[nodiscard]] std::size_t subscribe() {
-        const std::size_t id = subscriber_count_.fetch_add(1, std::memory_order_acq_rel);
-        if (id >= MaxSubscribers) {
-            subscriber_count_.fetch_sub(1, std::memory_order_acq_rel);
-            throw std::length_error("zenith::EventBus subscriber limit reached");
+        // CAS so the count never exceeds MaxSubscribers even transiently —
+        // a racing publish() must never see an out-of-bounds queue index.
+        std::size_t id = subscriber_count_.load(std::memory_order_relaxed);
+        for (;;) {
+            if (id >= MaxSubscribers) {
+                throw std::length_error("zenith::EventBus subscriber limit reached");
+            }
+            if (subscriber_count_.compare_exchange_weak(id, id + 1, std::memory_order_acq_rel,
+                                                        std::memory_order_relaxed)) {
+                return id;
+            }
         }
-        return id;
     }
 
     // Non-blocking broadcast: one push attempt per subscriber queue.

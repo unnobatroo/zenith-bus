@@ -146,20 +146,27 @@ EMSCRIPTEN_KEEPALIVE int zb_subscribe() {
     }
 }
 
-// Returns bit0 = publish() result; bits 1..N = queues left at capacity after
-// the call (i.e. the ones that dropped this packet).
+static bool valid_sub(int sub) {
+    return sub >= 0 && static_cast<std::size_t>(sub) < g_bus.subscriber_count();
+}
+
+// Returns bit0 = publish() result; bits 1..N = queues that were already at
+// capacity BEFORE the push attempt (i.e. exactly the ones that dropped this
+// packet — try_push fails iff full).
 EMSCRIPTEN_KEEPALIVE int zb_publish(double seq, double ts, float speed, float steer, float yaw) {
     const VizPacket p{static_cast<std::uint64_t>(seq), ts, speed, steer, yaw};
-    const bool ok = g_bus.publish(p);
     int full_mask = 0;
     for (std::size_t i = 0; i < g_bus.subscriber_count(); ++i) {
         if (g_bus.queues_[i].size_approx() >= kBusCapacity)
             full_mask |= 1 << (i + 1);
     }
+    const bool ok = g_bus.publish(p);
     return (ok ? 1 : 0) | full_mask;
 }
 
 EMSCRIPTEN_KEEPALIVE int zb_drain(int sub) {
+    if (!valid_sub(sub))
+        return 0;
     g_drain_count = 0;
     const std::size_t n = g_bus.drain(static_cast<std::size_t>(sub), [&](const VizPacket &p) {
         g_last_popped[sub] = p;
@@ -176,6 +183,8 @@ EMSCRIPTEN_KEEPALIVE double zb_drain_ts(int i) {
 }
 
 EMSCRIPTEN_KEEPALIVE double zb_last_field(int sub, int field) {
+    if (!valid_sub(sub))
+        return 0;
     const VizPacket &p = g_last_popped[sub];
     switch (field) {
     case 0:
@@ -194,6 +203,8 @@ EMSCRIPTEN_KEEPALIVE double zb_last_field(int sub, int field) {
 }
 
 EMSCRIPTEN_KEEPALIVE int zb_occupancy(int sub) {
+    if (!valid_sub(sub))
+        return 0;
     return static_cast<int>(g_bus.queues_[static_cast<std::size_t>(sub)].size_approx());
 }
 EMSCRIPTEN_KEEPALIVE int zb_subscriber_count() {

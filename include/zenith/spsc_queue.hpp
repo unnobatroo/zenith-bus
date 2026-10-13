@@ -65,7 +65,7 @@ template <TriviallyRelocatable T, std::size_t Capacity> class SPSCQueue {
                 return false;
             }
         }
-        storage_[tail & kMask] = item;
+        storage_[tail & kMask] = std::forward<U>(item);
         tail_.store(tail + 1, std::memory_order_release);
         return true;
     }

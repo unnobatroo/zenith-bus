@@ -76,6 +76,7 @@ TEST(SPSCQueue, ConcurrentProducerConsumer) {
     zenith::SPSCQueue<std::int64_t, 1024> queue;
     std::atomic<bool> producer_done{false};
     std::atomic<int> errors{0};
+    std::atomic<std::int64_t> received{0};
 
     std::thread producer([&] {
         for (std::int64_t i = 0; i < kTotal; ++i) {
@@ -97,19 +98,20 @@ TEST(SPSCQueue, ConcurrentProducerConsumer) {
                 }
                 ++expected;
             } else if (producer_done.load(std::memory_order_acquire)) {
-                // Producer finished; a missing value means a real loss.
-                if (!queue.try_pop(value)) {
-                    break;
-                }
+                // Queue empty and producer finished: anything still missing
+                // is a real loss — the final count assertion catches it.
+                break;
             } else {
                 std::this_thread::yield();
             }
         }
+        received.store(expected, std::memory_order_relaxed);
     });
 
     producer.join();
     consumer.join();
     EXPECT_EQ(errors.load(), 0);
+    EXPECT_EQ(received.load(), kTotal);
 }
 
 } // namespace

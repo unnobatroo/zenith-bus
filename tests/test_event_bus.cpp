@@ -110,13 +110,13 @@ TEST(EventBus, StressSequentialIntegersTwoSubscribers) {
             if (bus.poll(sub_id, value)) {
                 if (value != expected) {
                     errors.fetch_add(1, std::memory_order_relaxed);
-                    return;
+                    break;
                 }
                 ++expected;
-            } else if (producer_done.load(std::memory_order_acquire) && !bus.poll(sub_id, value)) {
-                // Producer finished and the queue is drained: anything still
-                // missing is a real loss.
-                return;
+            } else if (producer_done.load(std::memory_order_acquire)) {
+                // Queue empty and producer finished: anything still missing
+                // is a real loss — the final count assertion catches it.
+                break;
             } else {
                 std::this_thread::yield();
             }
