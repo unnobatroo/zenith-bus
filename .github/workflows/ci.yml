@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [ { cc: gcc-14, cxx: g++-14 }, { cc: clang-18, cxx: clang++-18 } ]
+        build_type: [ Release, Debug ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang-tidy-18 clang-format-18
+
+      - name: Configure CMake
+        env:
+          CC: ${{ matrix.compiler.cc }}
+          CXX: ${{ matrix.compiler.cxx }}
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DZENITH_BUILD_TESTS=ON \
+            -DZENITH_BUILD_BENCHMARKS=ON \
+            -DZENITH_BUILD_EXAMPLES=ON
+
+      - name: Build All Targets
+        run: cmake --build build
+
+      - name: Run GoogleTest Suite
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Clang & Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 ninja-build cmake
+
+      - name: Test under AddressSanitizer and UndefinedBehaviorSanitizer
+        env:
+          CC: clang-18
+          CXX: clang++-18
+        run: |
+          cmake -B build-asan -G Ninja \
+            -DZENITH_BUILD_TESTS=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-asan
+          ctest --test-dir build-asan --output-on-failure
+
+      - name: Test under ThreadSanitizer
+        env:
+          CC: clang-18
+          CXX: clang++-18
+        run: |
+          cmake -B build-tsan -G Ninja \
+            -DZENITH_BUILD_TESTS=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          cmake --build build-tsan
+          ctest --test-dir build-tsan --output-on-failure
+
+  static-analysis:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Clang-Format
+        run: |
+          sudo apt-get install -y clang-format-18
+          find include examples tests benchmarks -name "*.hpp" -o -name "*.cpp" | xargs clang-format-18 --dry-run --Werror
+
+      - name: Run Clang-Tidy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy-18 ninja-build
+          cmake -B build-tidy -G Ninja -DZENITH_BUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          run-clang-tidy-18 -p build-tidy "include/.*|tests/.*"

@@ -1,0 +1,30 @@
+version: "2"
+language: "en-US"
+tone_instructions: "Be rigorous, direct, and technically precise. Focus on memory safety, concurrency, cache-line alignment, and zero-allocation execution paths."
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+  tools:
+    shellcheck:
+      enabled: true
+    markdownlint:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+path_instructions:
+  - path: "include/zenith/**"
+    instructions: |
+      - Enforce zero dynamic allocations (no new, malloc, or container resizing).
+      - Verify that std::atomic operations strictly use std::memory_order_acquire, std::memory_order_release, or std::memory_order_relaxed. Reject unverified std::memory_order_seq_cst.
+      - Ensure alignas(64) or hardware_destructive_interference_size is maintained on shared atomics to prevent false sharing.
+      - Ensure all types passed to ring buffers satisfy TriviallyRelocatable.
+  - path: "tests/**"
+    instructions: |
+      - Verify that stress tests run under both ASan and TSan without races or memory leaks.
