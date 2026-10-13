@@ -1,7 +1,5 @@
 # ZenithBus
 
-A header-only C++20 library for moving events between threads without locks.
-
 Here's the deal: the default way to pass data between threads is a mutex plus
 a queue. That works, but it has jitter — lock contention, priority inversion,
 syscall wakeups. If you're building something latency-sensitive (telemetry,
