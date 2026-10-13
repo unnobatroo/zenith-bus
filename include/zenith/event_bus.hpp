@@ -49,7 +49,7 @@ class EventBus {
     // every subscriber use publish_wait().
     bool publish(const T &event) noexcept {
         bool all_delivered = true;
-        const std::size_t n = subscriber_count_.load(std::memory_order_acquire);
+        const std::size_t n = activeSubscribers();
         for (std::size_t i = 0; i < n; ++i) {
             all_delivered = queues_[i].try_push(event) && all_delivered;
         }
@@ -59,7 +59,7 @@ class EventBus {
     // Guaranteed broadcast: spins (yielding) until every subscriber queue
     // accepts the event. Blocks if a subscriber stops draining.
     void publish_wait(const T &event) noexcept {
-        const std::size_t n = subscriber_count_.load(std::memory_order_acquire);
+        const std::size_t n = activeSubscribers();
         for (std::size_t i = 0; i < n; ++i) {
             while (!queues_[i].try_push(event)) {
                 std::this_thread::yield();
@@ -68,7 +68,7 @@ class EventBus {
     }
 
     bool poll(std::size_t sub_id, T &out_event) noexcept {
-        if (sub_id >= subscriber_count_.load(std::memory_order_acquire)) {
+        if (sub_id >= activeSubscribers()) {
             return false;
         }
         return queues_[sub_id].try_pop(out_event);
@@ -91,6 +91,13 @@ class EventBus {
     }
 
   private:
+    // Queue index bound, clamped to the array size so out-of-bounds access
+    // is provably impossible even to the optimizer.
+    std::size_t activeSubscribers() const noexcept {
+        const std::size_t n = subscriber_count_.load(std::memory_order_acquire);
+        return n < MaxSubscribers ? n : MaxSubscribers;
+    }
+
     std::array<SPSCQueue<T, QueueCapacity>, MaxSubscribers> queues_;
     alignas(64) std::atomic<std::size_t> subscriber_count_{0};
 };
