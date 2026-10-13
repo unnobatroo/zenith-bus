@@ -6,7 +6,9 @@
 // internal state. Build: clang++ -std=c++20 -I../include zenith_api.cpp
 // test_native.cpp -o test_native
 #include <cassert>
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 extern "C" {
 void zq_set_capacity(int);
@@ -28,6 +30,17 @@ double zb_drain_ts(int);
 double zb_last_field(int, int);
 int zb_occupancy(int);
 int zb_subscriber_count();
+void zq_rt_start(double, double);
+void zb_rt_start(double, double, double, double);
+void rt_stop();
+int rt_running();
+double rt_pushed();
+double rt_popped();
+double rt_push_fail();
+double rt_pop_fail();
+double rt_published();
+double rt_pub_fail();
+double rt_drained(int);
 }
 
 int main() {
@@ -72,6 +85,41 @@ int main() {
     assert(zb_drain_ts(0) == 10.0);     // first packet was ts=10
     assert(zb_last_field(0, 0) == 2.0); // last drained seq
     assert(zb_occupancy(0) == 0);
+
+    // --- Real threaded mode: actual producer/consumer threads on the queue ---
+    zq_reset();
+    zq_rt_start(0, 0); // flat out
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    rt_stop();
+    const double pushed = rt_pushed(), popped = rt_popped();
+    assert(pushed > 1000 && popped > 1000);
+    assert(pushed == popped + zq_size()); // conservation: in-flight = pushed - popped
+    assert(rt_running() == 0);
+
+    // Mutation guards: ignored while threads run.
+    zq_rt_start(0, 0);
+    zq_set_capacity(32);
+    zq_reset();
+    rt_stop();
+    assert(zq_capacity() == 8);
+
+    // --- Bus threaded mode ---
+    zb_reset();
+    assert(zb_subscribe() == 0 && zb_subscribe() == 1 && zb_subscribe() == 2);
+    zb_rt_start(0, 0, 200, 0); // fast, slow, flat
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    rt_stop();
+    // Flat-out publisher with a 200 Hz drainer: most publishes partially
+    // fail (slow queue stays full) — that's the API's real semantics.
+    assert(rt_published() + rt_pub_fail() > 1000);
+    assert(rt_pub_fail() > rt_published());
+    assert(rt_drained(0) > 1000); // fast consumer keeps up regardless
+    for (int s = 0; s < 3; ++s) {
+        // partial-failure publishes still deliver to fast queues, so a
+        // queue's deliveries are bounded by total publish ATTEMPTS.
+        const double rem = zb_occupancy(s);
+        assert(rt_drained(s) + rem <= rt_published() + rt_pub_fail());
+    }
 
     std::puts("native binding test: all assertions passed");
     return 0;

@@ -89,3 +89,35 @@ jobs:
           sudo apt-get install -y clang-tidy-18 ninja-build
           cmake -B build-tidy -G Ninja -DZENITH_BUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           run-clang-tidy-18 -p build-tidy "include/.*|tests/.*"
+
+  # Informational only: hosted-runner PMU access is flaky, so this job never
+  # gates. When perf works it proves the false-sharing claim with real L1
+  # miss counts, padded vs ZENITH_NO_CACHELINE_PAD.
+  perf-false-sharing:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install perf & toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ linux-tools-generic
+          sudo sysctl kernel.perf_event_paranoid=-1 || true
+
+      - name: Build benchmarks (padded + unpadded)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DZENITH_BUILD_BENCHMARKS=ON
+          cmake --build build --target bench_event_bus bench_event_bus_nopad
+
+      - name: perf stat — padded (alignas(64))
+        run: |
+          perf stat -e L1-dcache-loads,L1-dcache-load-misses,cache-misses \
+            ./build/benchmarks/bench_event_bus \
+            --benchmark_filter=InterThread --benchmark_min_time=2s || true
+
+      - name: perf stat — unpadded (ZENITH_NO_CACHELINE_PAD)
+        run: |
+          perf stat -e L1-dcache-loads,L1-dcache-load-misses,cache-misses \
+            ./build/benchmarks/bench_event_bus_nopad \
+            --benchmark_filter=InterThread --benchmark_min_time=2s || true

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -68,6 +69,97 @@ VizPacket g_last_popped[kBusMaxSubs]{};
 double g_drain_ts[kBusCapacity];
 std::size_t g_drain_count = 0;
 
+// ---- Real-time mode ----------------------------------------------------------
+// With -pthread + SharedArrayBuffer these are REAL worker threads racing on
+// the real queue/bus. The JS main thread never touches the hot path — it only
+// reads these atomics plus the live head_/tail_ probes. hz <= 0 = flat out.
+
+std::atomic<bool> g_rt_on{false};
+std::atomic<std::uint64_t> g_pushed{0}, g_popped{0};
+std::atomic<std::uint64_t> g_push_fail{0}, g_pop_fail{0};
+std::thread g_prod, g_cons;
+
+std::atomic<std::uint64_t> g_b_published{0}, g_b_pub_fail{0};
+std::atomic<std::uint64_t> g_b_drained[kBusMaxSubs]{};
+std::thread g_b_prod, g_b_drain[kBusMaxSubs];
+
+// Diagnostic snapshots — the JS thread must never read non-atomic fields
+// (cached_head_, storage_, g_last_popped) while workers run; that's a data
+// race. Workers publish these atomics; getters switch to them under RT.
+std::atomic<std::size_t> g_snap_chead{0}, g_snap_ctail{0};
+std::atomic<std::uint32_t> g_slot_snap[32]{};
+std::atomic<std::uint64_t> g_b_last_seq[kBusMaxSubs]{};
+
+void pace(double hz) {
+    static thread_local auto next = std::chrono::steady_clock::now();
+    next += std::chrono::nanoseconds(static_cast<long long>(1e9 / hz));
+    const auto now = std::chrono::steady_clock::now();
+    if (next < now) { // fell behind — skip the burst, don't try to catch up
+        next = now;
+        return;
+    }
+    while (std::chrono::steady_clock::now() < next)
+        std::this_thread::yield();
+}
+
+void produce_loop(double hz) {
+    std::uint32_t v = 0;
+    const std::size_t mask = static_cast<std::size_t>(g_capacity) - 1;
+    while (g_rt_on.load(std::memory_order_relaxed)) {
+        const bool ok = withQueue([&](auto &q) { return q.try_push(v); });
+        if (ok) {
+            g_slot_snap[v & mask].store(v, std::memory_order_relaxed);
+            ++v;
+        }
+        // cached_head_ is producer-owned — safe to read here, publish for JS.
+        withQueue([](auto &q) { g_snap_chead.store(q.cached_head_, std::memory_order_relaxed); });
+        (ok ? g_pushed : g_push_fail).fetch_add(1, std::memory_order_relaxed);
+        if (hz > 0)
+            pace(hz);
+    }
+}
+
+void consume_loop(double hz) {
+    while (g_rt_on.load(std::memory_order_relaxed)) {
+        std::uint32_t v = 0;
+        const bool ok = withQueue([&](auto &q) { return q.try_pop(v); });
+        withQueue([](auto &q) { g_snap_ctail.store(q.cached_tail_, std::memory_order_relaxed); });
+        (ok ? g_popped : g_pop_fail).fetch_add(1, std::memory_order_relaxed);
+        if (hz > 0)
+            pace(hz);
+    }
+}
+
+void bus_produce_loop(double hz) {
+    std::uint64_t seq = 0;
+    while (g_rt_on.load(std::memory_order_relaxed)) {
+        const VizPacket p{++seq, static_cast<double>(seq), 20.f + static_cast<float>(seq % 40),
+                          0.4f * ((seq % 200) < 100 ? 1.f : -1.f), 0.05f};
+        (g_bus.publish(p) ? g_b_published : g_b_pub_fail).fetch_add(1, std::memory_order_relaxed);
+        if (hz > 0)
+            pace(hz);
+    }
+}
+
+void bus_drain_loop(std::size_t sub, double hz) {
+    while (g_rt_on.load(std::memory_order_relaxed)) {
+        const std::size_t n = g_bus.drain(sub, [&](const VizPacket &p) {
+            g_last_popped[sub] = p;
+            g_b_last_seq[sub].store(p.seq, std::memory_order_relaxed);
+        });
+        g_b_drained[sub].fetch_add(n, std::memory_order_relaxed);
+        if (n == 0)
+            std::this_thread::yield();
+        if (hz > 0)
+            pace(hz);
+    }
+}
+
+void join(std::thread &t) {
+    if (t.joinable())
+        t.join();
+}
+
 } // namespace
 
 extern "C" {
@@ -75,6 +167,8 @@ extern "C" {
 // ---- SPSC queue API --------------------------------------------------------
 
 EMSCRIPTEN_KEEPALIVE void zq_set_capacity(int capacity) {
+    if (g_rt_on.load(std::memory_order_relaxed))
+        return; // never swap the variant under running threads
     g_capacity = capacity;
     switch (capacity) {
     case 8:
@@ -90,6 +184,8 @@ EMSCRIPTEN_KEEPALIVE void zq_set_capacity(int capacity) {
 }
 
 EMSCRIPTEN_KEEPALIVE void zq_reset() {
+    if (g_rt_on.load(std::memory_order_relaxed))
+        return;
     withQueue([](auto &q) { g_queue.emplace<std::decay_t<decltype(q)>>(); });
 }
 
@@ -113,10 +209,16 @@ EMSCRIPTEN_KEEPALIVE double zq_tail() {
     return withQueue(
         [](auto &q) { return static_cast<double>(q.tail_.load(std::memory_order_relaxed)); });
 }
+// Non-atomic cached_* / storage_ reads are only safe single-threaded — under
+// RT they read the worker-published atomic snapshots instead.
 EMSCRIPTEN_KEEPALIVE double zq_cached_head() {
+    if (g_rt_on.load(std::memory_order_relaxed))
+        return static_cast<double>(g_snap_chead.load(std::memory_order_relaxed));
     return withQueue([](auto &q) { return static_cast<double>(q.cached_head_); });
 }
 EMSCRIPTEN_KEEPALIVE double zq_cached_tail() {
+    if (g_rt_on.load(std::memory_order_relaxed))
+        return static_cast<double>(g_snap_ctail.load(std::memory_order_relaxed));
     return withQueue([](auto &q) { return static_cast<double>(q.cached_tail_); });
 }
 EMSCRIPTEN_KEEPALIVE double zq_size() {
@@ -124,15 +226,20 @@ EMSCRIPTEN_KEEPALIVE double zq_size() {
 }
 EMSCRIPTEN_KEEPALIVE int zq_capacity() { return g_capacity; }
 
-// Raw slot read — returns whatever bytes occupy storage_[i] (stale data for
-// free slots, exactly like the real ring).
+// Raw slot read — returns whatever occupies storage_[i] (stale data for
+// free slots, exactly like the real ring). Under RT: last value the producer
+// published for that slot — identical for slots inside [head, tail).
 EMSCRIPTEN_KEEPALIVE std::uint32_t zq_slot_value(int i) {
+    if (g_rt_on.load(std::memory_order_relaxed))
+        return g_slot_snap[i & 31].load(std::memory_order_relaxed);
     return withQueue([&](auto &q) { return q.storage_[static_cast<std::size_t>(i)]; });
 }
 
 // ---- Event bus API ---------------------------------------------------------
 
 EMSCRIPTEN_KEEPALIVE void zb_reset() {
+    if (g_rt_on.load(std::memory_order_relaxed))
+        return;
     g_bus.~EventBus();
     new (&g_bus) zenith::EventBus<VizPacket, kBusCapacity, kBusMaxSubs>();
     g_drain_count = 0;
@@ -186,6 +293,11 @@ EMSCRIPTEN_KEEPALIVE double zb_drain_ts(int i) {
 EMSCRIPTEN_KEEPALIVE double zb_last_field(int sub, int field) {
     if (!valid_sub(sub))
         return 0;
+    // Under RT only seq is race-free — the atomic snapshot. Other fields
+    // come from g_last_popped, which sync callers use when threads are off.
+    if (g_rt_on.load(std::memory_order_relaxed))
+        return field == 0 ? static_cast<double>(g_b_last_seq[sub].load(std::memory_order_relaxed))
+                          : 0;
     const VizPacket &p = g_last_popped[sub];
     switch (field) {
     case 0:
@@ -210,5 +322,74 @@ EMSCRIPTEN_KEEPALIVE int zb_occupancy(int sub) {
 }
 EMSCRIPTEN_KEEPALIVE int zb_subscriber_count() {
     return static_cast<int>(g_bus.subscriber_count());
+}
+
+// ---- Real-time threaded API --------------------------------------------------
+// Real std::threads (Web Workers via -pthread) running the real hot loops.
+// Start/stop from JS; observe via the same probes — values move on their own.
+
+EMSCRIPTEN_KEEPALIVE void zq_rt_start(double push_hz, double pop_hz) {
+    if (g_rt_on.exchange(true, std::memory_order_acq_rel))
+        return;
+    g_pushed = g_popped = g_push_fail = g_pop_fail = 0;
+    for (auto &s : g_slot_snap)
+        s = 0;
+    // seed snapshots from live values — still safe, workers not yet spawned
+    withQueue([](auto &q) {
+        g_snap_chead = q.cached_head_;
+        g_snap_ctail = q.cached_tail_;
+    });
+    g_prod = std::thread(produce_loop, push_hz);
+    g_cons = std::thread(consume_loop, pop_hz);
+}
+
+EMSCRIPTEN_KEEPALIVE void zb_rt_start(double pub_hz, double hz0, double hz1, double hz2) {
+    if (g_rt_on.exchange(true, std::memory_order_acq_rel))
+        return;
+    g_b_published = g_b_pub_fail = 0;
+    for (std::size_t i = 0; i < kBusMaxSubs; ++i) {
+        g_b_drained[i] = 0;
+        g_b_last_seq[i] = 0;
+    }
+    g_b_prod = std::thread(bus_produce_loop, pub_hz);
+    const double rates[3] = {hz0, hz1, hz2};
+    const std::size_t n = std::min<std::size_t>(3, g_bus.subscriber_count());
+    for (std::size_t i = 0; i < n; ++i)
+        g_b_drain[i] = std::thread(bus_drain_loop, i, rates[i]);
+}
+
+EMSCRIPTEN_KEEPALIVE void rt_stop() {
+    if (!g_rt_on.exchange(false, std::memory_order_acq_rel))
+        return;
+    join(g_prod);
+    join(g_cons);
+    join(g_b_prod);
+    for (auto &t : g_b_drain)
+        join(t);
+}
+
+EMSCRIPTEN_KEEPALIVE int rt_running() { return g_rt_on.load(std::memory_order_relaxed) ? 1 : 0; }
+EMSCRIPTEN_KEEPALIVE double rt_pushed() {
+    return static_cast<double>(g_pushed.load(std::memory_order_relaxed));
+}
+EMSCRIPTEN_KEEPALIVE double rt_popped() {
+    return static_cast<double>(g_popped.load(std::memory_order_relaxed));
+}
+EMSCRIPTEN_KEEPALIVE double rt_push_fail() {
+    return static_cast<double>(g_push_fail.load(std::memory_order_relaxed));
+}
+EMSCRIPTEN_KEEPALIVE double rt_pop_fail() {
+    return static_cast<double>(g_pop_fail.load(std::memory_order_relaxed));
+}
+EMSCRIPTEN_KEEPALIVE double rt_published() {
+    return static_cast<double>(g_b_published.load(std::memory_order_relaxed));
+}
+EMSCRIPTEN_KEEPALIVE double rt_pub_fail() {
+    return static_cast<double>(g_b_pub_fail.load(std::memory_order_relaxed));
+}
+EMSCRIPTEN_KEEPALIVE double rt_drained(int sub) {
+    return (sub >= 0 && sub < static_cast<int>(kBusMaxSubs))
+               ? static_cast<double>(g_b_drained[sub].load(std::memory_order_relaxed))
+               : 0;
 }
 }

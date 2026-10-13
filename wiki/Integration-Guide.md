@@ -1,87 +1,63 @@
 # Integration Guide
 
-ZenithBus is header-only: the whole library is `include/zenith/`. There is
-nothing to compile or link beyond telling your build system where the
-headers live.
+The library is three headers. Pick whichever mechanism you prefer.
 
-## CMake FetchContent (recommended)
+## CMake FetchContent
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
-    zenith_bus
-    GIT_REPOSITORY https://github.com/unnobatroo/zenith-bus.git
-    GIT_TAG main        # pin a tag or commit for reproducible builds
+  zenith_bus
+  GIT_REPOSITORY https://github.com/unnobatroo/zenith-bus.git
+  GIT_TAG main        # pin a tag/commit for reproducibility
 )
 FetchContent_MakeAvailable(zenith_bus)
-
 target_link_libraries(your_target PRIVATE zenith::zenith)
 ```
 
-`zenith::zenith` is an INTERFACE target carrying the include path and the
-`cxx_std_20` requirement. Tests, examples, and benchmarks are off by
-default when consumed this way (`ZENITH_BUILD_TESTS` etc. default ON only
-for top-level builds of this repo itself).
+## Vendored
 
-## Without CMake
-
-```bash
-c++ -std=c++20 -I/path/to/zenith-bus/include your_file.cpp
-```
+Copy `include/zenith/` into your project and add it to your include path.
+Compile with `-std=c++20`. Nothing else is required — no libraries, no
+linker flags, no build files.
 
 ## Minimal example
 
 ```cpp
 #include "zenith/event_bus.hpp"
-#include <thread>
+#include <cstdio>
 
-struct TelemetryUpdate {
-    std::uint32_t vehicle_id;
-    float speed_mps;
-    float steering_rad;
-};
+struct Msg { int id; float value; };
 
 int main() {
-    zenith::EventBus<TelemetryUpdate, 1024> bus;   // power-of-two capacity
-    const auto sub = bus.subscribe();            // during setup, before publishing
+    zenith::EventBus<Msg, 256> bus;
+    auto sub = bus.subscribe();
 
-    std::jthread consumer([&](std::stop_token stop) {
-        while (!stop.stop_requested()) {
-            bus.drain(sub, [](const TelemetryUpdate& m) { /* consume */ });
-            std::this_thread::yield();
-        }
-    });
+    bus.publish({1, 3.14f});
 
-    bus.publish(TelemetryUpdate{42, 12.5f, -0.05f});
+    Msg m{};
+    while (bus.poll(sub, m))
+        std::printf("got %d = %f\n", m.id, m.value);
 }
 ```
 
-## Contract checklist
+## Rules that will bite you if ignored
 
-- Payloads must satisfy `TriviallyRelocatable` — trivially copyable and
-  standard layout. Plain structs are fine.
-- `subscribe()` before `publish()` begins; it is not safe to subscribe
-  concurrently with an in-flight publish.
-- `publish()` is non-blocking and may drop for a full subscriber; use
-  `publish_wait()` when every subscriber must receive every event.
-- Each subscriber handle is single-consumer — don't `poll`/`drain` the same
-  `sub_id` from two threads.
-- `EventBus` and `SPSCQueue` are non-copyable and non-movable — construct
-  them where they will live.
+- **One producer thread total.** `publish`/`try_push` from two threads = UB.
+- **One consumer per queue.** Don't share a subscriber handle across threads.
+- **Subscribe before publishing.** `subscribe()` during active publication
+  is safe, but the new subscriber misses in-flight events.
+- **`publish()` can partially fail.** Full queues drop the event while others
+  accept it — a retry duplicates to the fast queues. Use `publish_wait()` for
+  must-deliver events.
+- **Payloads are PODs.** See `TriviallyRelocatable` in the API reference.
 
-## Toolchain requirements
+## Requirement matrix
 
-| Requirement | Version |
+| | version |
 |---|---|
-| C++ standard | C++20 |
+| C++ | C++20 |
 | GCC | 12+ |
 | Clang | 15+ |
-| CMake (if using FetchContent) | 3.22+ |
-
-Validated in CI on GCC 14 and Clang 18, Release and Debug, plus
-ASan/UBSan/TSan on every commit.
-
-## License
-
-GPL-3.0-or-later — see `LICENSE`. If GPL doesn't fit your project, that's a
-deliberate upstream choice, not an oversight.
+| CMake (if used) | 3.22+ |
+| Arch | any; verified x86-64 and ARM64 |
