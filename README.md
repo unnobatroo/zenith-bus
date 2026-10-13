@@ -1,102 +1,97 @@
-# zenith-bus
+# ZenithBus
 
-Header-only C++20 lock-free event dispatcher for low-latency inter-thread
-fan-out. One producer broadcasts to N subscribers; every subscriber owns a
-dedicated single-producer/single-consumer ring buffer.
+A tiny header-only C++20 library that moves events between threads without
+locks. One producer broadcasts to N subscribers; each subscriber gets its own
+single-producer/single-consumer ring buffer. No heap allocation, no mutexes,
+no CAS loops on the hot path.
 
-## Why lock-free SPSC
+```
+publisher thread ──publish()──► ┌─ queue 0 ──► consumer thread 0
+                                ├─ queue 1 ──► consumer thread 1
+                                └─ queue 2 ──► consumer thread 2
+```
 
-In real-time pipelines (telemetry, market data, robotics), a mutex on the
-message path adds unpredictable contention, priority inversion, and syscall
-wakeups. A bounded SPSC ring buffer has none of that: the producer writes a
-slot and releases one atomic index; each consumer advances its own head
-index. Producer and consumer indices sit on separate cache lines so cores
-never fight over the same line, and each side caches the peer index to keep
-cross-core traffic off the hot path.
+## Try it in 30 seconds
 
-## Quickstart
+```bash
+make test    # build + run the whole suite (incl. a 10M-message stress test)
+make bench   # latency & throughput numbers, incl. real 2-thread ping-pong
+make viz     # serve the interactive WASM visualizer at localhost:8469
+```
+
+Requires: CMake 3.22+, GCC 12+ or Clang 15+. Test deps are fetched
+automatically — the library itself needs nothing but `<atomic>`.
+
+## Using it
 
 ```cpp
 #include "zenith/event_bus.hpp"
-
 #include <fmt/core.h>
 
-struct TelemetryUpdate {
-    std::uint32_t vehicle_id;
-    float speed_mps;
-    float steering_rad;
-};
+struct Telemetry { uint32_t id; float speed; float steer; };
 
-zenith::EventBus<TelemetryUpdate, 1024> bus;   // capacity: power of two, >= 2
-const auto sub = bus.subscribe();              // up to 8 subscribers
+zenith::EventBus<Telemetry, 1024> bus;      // capacity: power of two, ≥ 2
+auto sub = bus.subscribe();                 // call once at setup, ≤ 8 subs
 
-std::jthread consumer([&](std::stop_token stop) {
-    while (!stop.stop_requested()) {
-        bus.drain(sub, [](const TelemetryUpdate& m) {
-            fmt::print("vehicle {} speed {} m/s\n", m.vehicle_id, m.speed_mps);
+std::jthread reader([&](std::stop_token st) {
+    while (!st.stop_requested())
+        bus.drain(sub, [](const Telemetry& t) {
+            fmt::print("vehicle {} at {} m/s\n", t.id, t.speed);
         });
-        std::this_thread::yield();
-    }
 });
 
-bus.publish(TelemetryUpdate{42, 12.5F, -0.05F});  // zero heap allocation
+bus.publish({42, 12.5f, -0.05f});           // non-blocking, no allocation
 ```
 
-`publish()` is non-blocking and returns `false` if any subscriber queue is
-full (that subscriber drops the event). `publish_wait()` spins until every
-subscriber accepts — use it when no subscriber may drop a message.
+Two things to know:
 
-Payloads must satisfy `zenith::TriviallyRelocatable` (trivially copyable,
-standard layout — plain structs are fine).
+- `publish()` returns `false` if any subscriber's queue is full — that
+  subscriber drops the event. Use `publish_wait()` when drops aren't allowed
+  (spins until everyone accepts; a dead subscriber will block it forever).
+- Payloads must be trivially copyable plain structs
+  (`zenith::TriviallyRelocatable`) — slots are raw storage, nothing is
+  constructed or destroyed per message.
 
-## Build
+## How it stays fast
 
-Requirements: Linux x86_64, GCC 12+ or Clang 15+, CMake 3.22+.
+The SPSC queue is the classic design (folly, moodycamel): producer and
+consumer each own one index on its own 64-byte cache line, so the cores never
+fight over the same line. Each side keeps a cached copy of the peer's index
+and only does the real atomic load when the queue *looks* full/empty. Payload
+writes are ordered by a release store on the index; the consumer pairs it
+with an acquire load. On x86-64 all of this is plain `mov` — no `lock`, no
+fences.
 
-```bash
-cmake -B build -DZENITH_BUILD_TESTS=ON -DZENITH_BUILD_BENCHMARKS=ON
-cmake --build build -j
-ctest --test-dir build --output-on-failure
-```
+Measured on this machine (Apple M-series, loaded desktop):
 
-Example CLI:
+| benchmark | result |
+|---|---|
+| same-thread push+pop | ~5.5 ns/op |
+| 2-thread ping-pong RTT | ~50 ns p50, ~200 ns p99 |
+| 2-thread sustained throughput | ~53 M msg/s |
+| fan-out publish to 8 subs | ~17.5 ns/publish |
+| same, without `alignas(64)` | ~37 M msg/s (−43% — false sharing is real) |
 
-```bash
-./build/examples/vehicle_telemetry_cli --subscribers 2 --rate-hz 1000 --duration-sec 5
-```
+Run `make bench` for your own numbers. CI additionally runs `perf stat` on
+padded vs unpadded builds to count the L1 misses directly.
 
-Benchmarks:
+## The visualizer
 
-```bash
-./build/benchmarks/bench_event_bus
-```
+`web/` is a zero-dependency static site (no npm, no build step — plain HTML,
+CSS, and ES modules). It loads the *actual* `spsc_queue.hpp`/`event_bus.hpp`
+compiled to WebAssembly with real worker threads (`wasm/zenith_api.cpp`
+exposes a small C API). The ring view's pointers and the bus view's queues
+are live state from running threads, not an animation. The cache-line view is
+a conceptual MESI diagram — browser code can't observe coherence state, and
+it says so on the tin.
 
-The library itself is header-only: add `include/` to your include path and
-compile with `-std=c++20`. Dependencies (GoogleTest, Google Benchmark, fmt,
-CLI11) are fetched via CMake `FetchContent` and only needed for tests,
-benchmarks, and examples.
+`make viz` serves it locally with the COOP/COEP headers SharedArrayBuffer
+requires; `vercel.json` sets the same headers for deployment.
 
-## Sanitizers
+## More
 
-```bash
-cmake -B build -DZENITH_BUILD_TESTS=ON -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"
-cmake --build build && ctest --test-dir build --output-on-failure
-# repeat with -fsanitize=thread
-```
-
-## Web visualizer (`web/`)
-
-Interactive Vite + React app that runs the *actual* headers compiled to
-WebAssembly (bindings in `wasm/zenith_api.cpp`, `EMSCRIPTEN_KEEPALIVE` C API).
-Ring buffer slots, indices, and cached peer indices are read live from the
-real compiled objects; the cache-line view is a simplified MESI model
-(hardware state is not observable in a browser).
-
-```bash
-cd web && npm install && npm run dev        # dev server
-npm run build                               # production build (dist/)
-npm run build:wasm                          # rebuild wasm (needs emscripten)
-```
-
-The committed `web/src/wasm/zenith.{js,wasm}` artifacts let Vercel deploy
-without Emscripten in the build image. Deploy `web/` as the project root.
+- [Full API reference](wiki/API-Reference.md) ·
+  [memory-model deep dive](wiki/Architecture-and-Memory-Model.md) ·
+  [integration guide](wiki/Integration-Guide.md)
+- `examples/vehicle_telemetry_cli.cpp` — realistic CLI demo (CLI11 + fmt)
+- `CONTRIBUTING.md` — dev workflow, sanitizer builds, PR checklist

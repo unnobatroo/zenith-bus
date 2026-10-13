@@ -11,6 +11,15 @@
 #include <cstddef>
 #include <utility>
 
+// alignas(64) on producer/consumer state keeps each index on its own cache
+// line. Build benchmarks with -DZENITH_NO_CACHELINE_PAD to measure the
+// false-sharing cost directly (see the perf-stat CI job).
+#if defined(ZENITH_NO_CACHELINE_PAD)
+#define ZENITH_CACHELINE
+#else
+#define ZENITH_CACHELINE alignas(64)
+#endif
+
 namespace zenith {
 
 // Bounded lock-free single-producer/single-consumer ring buffer, modeled on
@@ -72,14 +81,14 @@ template <TriviallyRelocatable T, std::size_t Capacity> class SPSCQueue {
         return true;
     }
 
-    alignas(64) std::array<T, Capacity> storage_;
+    ZENITH_CACHELINE std::array<T, Capacity> storage_;
 
     // Producer-owned line: written only by the producing thread.
-    alignas(64) std::atomic<std::size_t> tail_{0};
+    ZENITH_CACHELINE std::atomic<std::size_t> tail_{0};
     std::size_t cached_head_{0};
 
     // Consumer-owned line: written only by the consuming thread.
-    alignas(64) std::atomic<std::size_t> head_{0};
+    ZENITH_CACHELINE std::atomic<std::size_t> head_{0};
     std::size_t cached_tail_{0};
 };
 
