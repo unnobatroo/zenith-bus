@@ -114,8 +114,17 @@ TEST(EventBus, StressSequentialIntegersTwoSubscribers) {
                 }
                 ++expected;
             } else if (producer_done.load(std::memory_order_acquire)) {
-                // Queue empty and producer finished: anything still missing
-                // is a real loss — the final count assertion catches it.
+                // Producer is done, but our last tail_ read may be stale —
+                // the last message can still be in flight. The acquire on
+                // producer_done synchronizes with every prior tail_ store,
+                // so this final drain is guaranteed to see them all.
+                while (bus.poll(sub_id, value)) {
+                    if (value != expected) {
+                        errors.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                    }
+                    ++expected;
+                }
                 break;
             } else {
                 std::this_thread::yield();
