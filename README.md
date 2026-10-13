@@ -98,9 +98,10 @@ and `vercel.json` does the same on deploy.
 
 ## Deeper reading
 
-[API reference](wiki/API-Reference.md) ·
-[how the memory model works](wiki/Architecture-and-Memory-Model.md) ·
-[benchmarks](wiki/Benchmarking-and-Performance.md) ·
-[drop it in your project](wiki/Integration-Guide.md)
+Full docs live in the [GitHub wiki](https://github.com/unnobatroo/zenith-bus/wiki):
+[API reference](https://github.com/unnobatroo/zenith-bus/wiki/API-Reference) ·
+[how the memory model works](https://github.com/unnobatroo/zenith-bus/wiki/Architecture-and-Memory-Model) ·
+[benchmarks](https://github.com/unnobatroo/zenith-bus/wiki/Benchmarking-and-Performance) ·
+[drop it in your project](https://github.com/unnobatroo/zenith-bus/wiki/Integration-Guide)
 
 GPL-3.0. PRs welcome — see CONTRIBUTING.md.
