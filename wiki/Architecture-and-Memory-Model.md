@@ -28,6 +28,18 @@ out  = storage_[head & mask];                        // 4. read data
 head_.store(head + 1, std::memory_order_release);    // 5. free the slot
 ```
 
+```mermaid
+sequenceDiagram
+    participant P as Producer (core 0)
+    participant M as Shared memory
+    participant C as Consumer (core 1)
+    P->>M: 1. storage_[tail & mask] = item
+    P->>M: 2. tail_.store(release)
+    C->>M: 3. tail_.load(acquire) — sees new tail ⇒ sees the payload
+    C->>M: 4. out = storage_[head & mask]
+    C->>M: 5. head_.store(release) — frees the slot
+```
+
 The rule: step 2's release store guarantees everything written *before* it
 (step 1) is visible to any thread that acquire-loads the new value (step 3).
 So the consumer can never see `tail_` advance without seeing the payload.
