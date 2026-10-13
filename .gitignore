@@ -1,0 +1,33 @@
+# CMake build artifacts
+build/
+build-*/
+cmake-build-*/
+out/
+*.cache
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Testing / profiling outputs
+*.profraw
+*.profdata
+gmon.out
+
+# Editor directories and generated files
+.vscode/
+.idea/
+.zed/
+compile_commands.json
+.cache/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Project extras
+web/node_modules/
+web/dist/
+wasm/test_native
+
+# TS build info
+*.tsbuildinfo
