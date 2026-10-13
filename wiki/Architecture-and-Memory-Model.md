@@ -96,8 +96,10 @@ touches a shared atomic at all: pure local arithmetic plus one plain store.
 
 `EventBus<T, Capacity, MaxSubscribers>` holds a preallocated
 `std::array<SPSCQueue<T, Capacity>, MaxSubscribers>` and an atomic
-`subscriber_count_`. `subscribe()` claims a slot via `fetch_add` and returns
-the queue index as a handle — do it during setup, before publishing.
+`subscriber_count_`. `subscribe()` claims a slot with a compare-exchange
+loop (retry until the count is < `MaxSubscribers` or fail) so a racing
+`publish()` can never observe an out-of-range count — and returns the queue
+index as a handle. Do it during setup, before publishing.
 
 `publish()` performs one `try_push` per subscriber: non-blocking, so a full
 subscriber queue drops that event for that subscriber only (returns

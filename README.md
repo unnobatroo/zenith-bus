@@ -19,6 +19,8 @@ cross-core traffic off the hot path.
 ```cpp
 #include "zenith/event_bus.hpp"
 
+#include <fmt/core.h>
+
 struct TelemetryUpdate {
     std::uint32_t vehicle_id;
     float speed_mps;

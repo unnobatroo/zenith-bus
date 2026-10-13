@@ -152,7 +152,8 @@ static bool valid_sub(int sub) {
 
 // Returns bit0 = publish() result; bits 1..N = queues that were already at
 // capacity BEFORE the push attempt (i.e. exactly the ones that dropped this
-// packet — try_push fails iff full).
+// packet — try_push fails iff full). Assumes single-threaded callers, which
+// holds for the JS/WASM boundary: no consumer can drain mid-publish.
 EMSCRIPTEN_KEEPALIVE int zb_publish(double seq, double ts, float speed, float steer, float yaw) {
     const VizPacket p{static_cast<std::uint64_t>(seq), ts, speed, steer, yaw};
     int full_mask = 0;
@@ -165,9 +166,9 @@ EMSCRIPTEN_KEEPALIVE int zb_publish(double seq, double ts, float speed, float st
 }
 
 EMSCRIPTEN_KEEPALIVE int zb_drain(int sub) {
+    g_drain_count = 0; // clear first so invalid subs can't leak stale results
     if (!valid_sub(sub))
         return 0;
-    g_drain_count = 0;
     const std::size_t n = g_bus.drain(static_cast<std::size_t>(sub), [&](const VizPacket &p) {
         g_last_popped[sub] = p;
         if (g_drain_count < kBusCapacity) {

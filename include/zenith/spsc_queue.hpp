@@ -65,7 +65,9 @@ template <TriviallyRelocatable T, std::size_t Capacity> class SPSCQueue {
                 return false;
             }
         }
-        storage_[tail & kMask] = std::forward<U>(item);
+        // TriviallyRelocatable → copy-assign is optimal; also keeps
+        // try_push(T&&) working for payloads with a deleted move-assign.
+        storage_[tail & kMask] = item;
         tail_.store(tail + 1, std::memory_order_release);
         return true;
     }
