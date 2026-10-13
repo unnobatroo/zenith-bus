@@ -31,9 +31,11 @@
   <div class="cols">
     <div class="card">
       <h2>SPSC ring — live internal state</h2>
-      <p class="hint">Every number below is read straight from the real queue object:
-      <code>head_</code>/<code>tail_</code> atomics, the cached peer copies, and raw slots.</p>
-      <svg id="ring" viewBox="0 0 340 340" width="340" height="340" role="img"></svg>
+      <p class="hint">This is a real <code>SPSCQueue</code> running in WASM.
+      Push/pop manually to see each memory op, or start the threads and watch
+      a real producer and consumer race — the markers are live atomic indices
+      read straight from the object, not an animation.</p>
+      <svg id="ring" viewBox="0 0 380 380" width="380" height="380" role="img"></svg>
       <div class="legend">
         <span class="sw cobalt">tail_ (producer)</span>
         <span class="sw teal">head_ (consumer)</span>
@@ -78,12 +80,13 @@
 <section id="view-cache" class="view">
   <div class="card">
     <h2>False sharing vs <code>alignas(64)</code></h2>
-    <p class="hint">Start the real threads on the Ring Buffer tab, then watch here.
-    When producer and consumer indices share one cache line, every write
-    invalidates the other core's copy — the MESI bounce below is
-    <em>conceptual</em> (hardware coherence state is unobservable from a browser),
-    but the traffic it depicts is real and measurable: the unpadded build of
-    <code>bench_event_bus</code> loses ~40% throughput on this machine.</p>
+    <p class="hint">Two threads each own one index. If both indices sit on the
+    same 64-byte cache line, every write invalidates the other core's copy —
+    the line ping-pongs between cores on every operation. <code>alignas(64)</code>
+    puts each on its own line. Start the threads on the Ring Buffer tab to see
+    the difference animate here. The bounce is <em>conceptual</em> — coherence
+    state isn't observable from a browser — but it's real: the unpadded build
+    of <code>bench_event_bus_nopad</code> measurably loses throughput.</p>
     <div class="row">
       <button id="cache-toggle" class="primary">layout: padded</button>
       <span id="cache-status" class="dim"></span>
@@ -103,10 +106,11 @@
   <div class="cols">
     <div class="card">
       <h2>Producer → 3 subscriber queues</h2>
-      <p class="hint">One real <code>EventBus::publish()</code> thread fans telemetry
-      packets out to three real <code>drain()</code> threads at different rates.
-      A slow consumer fills its queue and forces publish failures —
-      exactly like production.</p>
+      <p class="hint">One real <code>EventBus::publish()</code> worker thread fans
+      telemetry packets out to three real <code>drain()</code> threads. The
+      disk logger drains slowly — watch its queue fill up and the
+      "partial" counter climb as publishes start dropping for it while the
+      fast consumers keep up. That's real backpressure, live.</p>
       <div id="busqueues"></div>
     </div>
     <div class="card">

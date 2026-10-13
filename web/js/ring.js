@@ -6,7 +6,8 @@ const svg = document.getElementById('ring');
 const NS = 'http://www.w3.org/2000/svg';
 const log = document.getElementById('memlog');
 let cap = 8;
-let prev = null; // previous probe snapshot, for op narration
+let slotRefs = []; // {g, rect, text} per slot index
+let markerT, markerH; // tail/head marker groups
 
 function probe(z) {
   return {
@@ -35,33 +36,64 @@ function narrate(before, after, ok, op) {
   while (log.children.length > 40) log.lastChild.remove();
 }
 
+function el(tag, attrs = {}) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+// Angle for slot i, 12 o'clock = slot 0, clockwise.
+function slotAngle(i, n) { return (i / n) * Math.PI * 2 - Math.PI / 2; }
+
 function buildRing(z) {
   svg.replaceChildren();
-  const N = z._zq_capacity(), cx = 170, cy = 170, r = 118;
-  for (let i = 0; i < N; i++) {
-    const a = (i / N) * Math.PI * 2 - Math.PI / 2;
+  slotRefs = [];
+  cap = z._zq_capacity();
+  const cx = 190, cy = 190, r = 128;
+  // slot size shrinks with capacity so 32 slots never overlap
+  const w = Math.min(40, Math.floor((2 * Math.PI * r) / cap) - 6);
+  const h = Math.round(w * 0.62);
+
+  for (let i = 0; i < cap; i++) {
+    const a = slotAngle(i, cap);
     const x = cx + r * Math.cos(a), y = cy + r * Math.sin(a);
-    const g = document.createElementNS(NS, 'g');
-    g.setAttribute('class', 'slot');
+    const g = el('g', { class: 'slot' });
     g.dataset.slot = i;
-    const rect = document.createElementNS(NS, 'rect');
-    rect.setAttribute('x', x - 19); rect.setAttribute('y', y - 13);
-    rect.setAttribute('width', 38); rect.setAttribute('height', 26);
-    rect.setAttribute('rx', 2);
-    const t = document.createElementNS(NS, 'text');
-    t.setAttribute('x', x); t.setAttribute('y', y + 3);
+    const rect = el('rect', { x: x - w / 2, y: y - h / 2, width: w, height: h, rx: 3 });
+    const t = el('text', { x, y });
     g.append(rect, t);
     svg.append(g);
+    slotRefs.push({ g, text: t });
   }
-  const c = document.createElementNS(NS, 'text');
-  c.setAttribute('class', 'ring-label');
-  c.setAttribute('x', cx); c.setAttribute('y', cy + 4);
-  c.id = 'ring-center';
-  svg.append(c);
+
+  // center readout
+  const val = el('text', { class: 'ring-center-val', x: cx, y: cy - 8, id: 'ring-center' });
+  const sub = el('text', { class: 'ring-center-cap', x: cx, y: cy + 14 });
+  sub.textContent = 'occupied';
+  svg.append(val, sub);
+
+  // head/tail markers ride outside the ring on their own layer
+  markerT = el('g', { class: 'marker' });
+  const tc = el('circle', { r: 9, fill: '#2456D6' });
+  const tt = el('text', { y: 0.5 });
+  tt.textContent = 'T';
+  markerT.append(tc, tt);
+  markerH = el('g', { class: 'marker' });
+  const hc = el('circle', { r: 9, fill: '#0D8A6E' });
+  const ht = el('text', { y: 0.5 });
+  ht.textContent = 'H';
+  markerH.append(hc, ht);
+  svg.append(markerT, markerH);
+}
+
+function placeMarker(marker, i) {
+  const a = slotAngle(i % cap, cap);
+  const cx = 190, cy = 190, r = 128 + 24;
+  marker.setAttribute('transform',
+    `translate(${cx + r * Math.cos(a)},${cy + r * Math.sin(a)})`);
 }
 
 export function initRing(z) {
-  cap = z._zq_capacity();
   buildRing(z);
   const $ = (id) => document.getElementById(id);
 
@@ -82,7 +114,6 @@ export function initRing(z) {
   $('ring-reset').onclick = () => { z._zq_reset(); log.replaceChildren(); };
   $('ring-cap').onchange = (e) => {
     z._zq_set_capacity(+e.target.value);
-    cap = z._zq_capacity();
     buildRing(z);
   };
   $('ring-rt').onclick = () => {
@@ -91,10 +122,12 @@ export function initRing(z) {
       z._rt_stop();
       btn.textContent = 'start real threads';
       btn.classList.remove('on');
+      document.getElementById('wstatus').classList.remove('live');
     } else {
       z._zq_rt_start(+$('ring-push-hz').value, +$('ring-pop-hz').value);
-      btn.textContent = 'stop threads';
+      btn.textContent = 'stop threads — indices move on their own';
       btn.classList.add('on');
+      document.getElementById('wstatus').classList.add('live');
     }
   };
 }
@@ -110,18 +143,19 @@ export function updateRing(z) {
   $('p-popped').textContent = z._rt_popped();
   $('p-pfail').textContent = z._rt_push_fail();
   $('p-efail').textContent = z._rt_pop_fail();
-  document.getElementById('ring-center').textContent = `${s.size}/${cap}`;
+  document.getElementById('ring-center').textContent = s.size;
 
   // occupied slots: indices [head, tail) mod capacity — the real ring semantics
   const occ = new Set();
   for (let i = s.head; i < s.tail && occ.size < cap; i++) occ.add(i % cap);
-  svg.querySelectorAll('.slot').forEach((g) => {
+
+  for (const { g, text } of slotRefs) {
     const i = +g.dataset.slot;
     g.classList.toggle('full', occ.has(i));
     g.classList.toggle('head', i === s.head % cap && s.size > 0);
     g.classList.toggle('tail', i === s.tail % cap && s.size < cap);
-    const t = g.querySelector('text');
-    t.textContent = occ.has(i) ? z._zq_slot_value(i) : '';
-  });
-  prev = s;
+    text.textContent = occ.has(i) ? z._zq_slot_value(i) : '';
+  }
+  placeMarker(markerT, s.tail);
+  placeMarker(markerH, s.head);
 }
