@@ -67,10 +67,10 @@ Measured on this machine (Apple M-series, loaded desktop):
 | benchmark | result |
 |---|---|
 | same-thread push+pop | ~5.5 ns/op |
-| 2-thread ping-pong RTT | ~50 ns p50, ~200 ns p99 |
-| 2-thread sustained throughput | ~53 M msg/s |
+| 2-thread ping-pong RTT | ~50 ns p50, ~150 ns p99 |
+| 2-thread sustained throughput | ~55 M msg/s |
 | fan-out publish to 8 subs | ~17.5 ns/publish |
-| same, without `alignas(64)` | ~37 M msg/s (−43% — false sharing is real) |
+| same, without `alignas(64)` | −6–30% throughput (noisy unpinned runs — false sharing is real) |
 
 Run `make bench` for your own numbers. CI additionally runs `perf stat` on
 padded vs unpadded builds to count the L1 misses directly.

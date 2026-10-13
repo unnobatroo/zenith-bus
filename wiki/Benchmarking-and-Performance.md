@@ -3,7 +3,7 @@
 ## Run it
 
 ```bash
-cmake -B build -DZENITH_BUILD_BENCHMARKS=ON
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DZENITH_BUILD_BENCHMARKS=ON
 cmake --build build -j
 ./build/benchmarks/bench_event_bus --benchmark_min_time=1s
 ```
@@ -26,7 +26,8 @@ Both threaded benchmarks pin thread 0→CPU 0, thread 1→CPU 1 on Linux.
 
 `bench_event_bus_nopad` is the same binary built with
 `-DZENITH_NO_CACHELINE_PAD`, which removes `alignas(64)` so `head_` and
-`tail_` share a cache line. On the dev machine: 53M → 37M msg/s (−43%).
+`tail_` share a cache line. On the dev machine the loss runs ~6–30%
+depending on core placement (macOS can't pin threads — numbers float).
 
 Count the misses directly on Linux:
 

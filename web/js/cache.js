@@ -64,7 +64,8 @@ export function updateCache(z) {
 
   status.textContent = padded
     ? 'each index on its own line — zero coherence traffic between cores'
-    : (storming ? 'MESI invalidation bouncing line 0 between cores'
-                : 'shared line — every index write invalidates the peer');
+    : (storming
+          ? 'hypothetical: if the queue were unpadded, line 0 would be bouncing between cores right now'
+          : 'shared line — every index write would invalidate the peer (simulated layout)');
   prev = { head, tail };
 }

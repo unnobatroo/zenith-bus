@@ -11,10 +11,13 @@ concept TriviallyRelocatable =
     std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>;
 ```
 
-Payload constraint. Plain structs of scalars qualify. `std::string`,
-`std::vector`, anything with a constructor/destructor or pointer members
-doesn't — slots are raw storage, and a `std::string` copied bitwise would
-double-own its heap pointer.
+Payload constraint. Plain structs of scalars qualify; `std::string`,
+`std::vector`, and anything with a constructor/destructor don't. Note the
+boundary: a struct containing a raw `int*` still satisfies the concept —
+pointers aren't checked — but if it *owns* what it points to, the bitwise
+slot copy shares ownership and you'll double-free. Payloads must also be
+assignable (the ring writes slots via copy assignment) and default-
+constructible (the `std::array` storage is default-constructed).
 
 ## `SPSCQueue<T, Capacity>`
 

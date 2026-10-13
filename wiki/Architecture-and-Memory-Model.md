@@ -46,8 +46,9 @@ copy — the MESI coherence protocol would ping-pong the line between cores on
 every single operation. `alignas(64)` puts each on its own line.
 
 Not just theory: the repo ships `bench_event_bus_nopad` (same code built
-with `ZENITH_NO_CACHELINE_PAD`). Measured difference on an M-series laptop:
-53M → 37M msg/s, a 43% throughput loss. CI runs `perf stat` on both builds.
+with `ZENITH_NO_CACHELINE_PAD`). Measured on an M-series laptop: throughput
+drops ~6–30% run to run (macOS can't pin threads, so results float); the
+`perf-false-sharing` CI job counts the actual L1 misses on x86-64.
 
 ## The cached peer indices
 

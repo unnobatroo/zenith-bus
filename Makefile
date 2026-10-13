@@ -8,12 +8,18 @@ build:
 test: build
 	ctest --test-dir build --output-on-failure
 
-bench: build
-	./build/benchmarks/bench_event_bus --benchmark_min_time=1s
+# Benchmarks need Release — an unoptimized build measures nothing real.
+build-release:
+	cmake -B build-release -DCMAKE_BUILD_TYPE=Release \
+		-DZENITH_BUILD_BENCHMARKS=ON
+	cmake --build build-release -j
+
+bench: build-release
+	./build-release/benchmarks/bench_event_bus --benchmark_min_time=1s
 
 # Real concurrent ping-pong + throughput only
-bench-rt: build
-	./build/benchmarks/bench_event_bus --benchmark_filter='PingPong|InterThread'
+bench-rt: build-release
+	./build-release/benchmarks/bench_event_bus --benchmark_filter='PingPong|InterThread'
 
 # No build step — pure static files. Needs python3 only.
 viz:

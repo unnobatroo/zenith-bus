@@ -179,8 +179,7 @@ void BM_SPSC_InterThreadThroughput(benchmark::State &state) {
     StampedPayload p{};
     if (state.thread_index() == 0) {
         for (auto _ : state) {
-            p.t0 = now_ns();
-            while (!queue.try_push(p)) {
+            while (!queue.try_push(p)) { // fixed payload — no clock on the hot path
             }
         }
     } else {
